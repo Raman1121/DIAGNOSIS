@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import argparse
 import numpy as np
+import pandas as pd
 from torch.autograd import Variable
 from torch.cuda.amp import autocast as autocast
 import time
@@ -21,9 +22,13 @@ def pil_loader(path: str) -> Image.Image:
         return img.convert("RGB")
     
 class Two_classes_ImageFolder(torch.utils.data.Dataset):
-    def __init__(self, ori_dir=None,coated_dir=None, transform=None):
-        all_ori_path  = glob.glob(ori_dir+'/*.png')
-        all_coated_path  = glob.glob(coated_dir+'/*.png')
+    def __init__(self, clean_df, coated_df, transform=None):
+        # all_ori_path  = glob.glob(ori_dir+'/*.png')
+        # all_coated_path  = glob.glob(coated_dir+'/*.png')
+
+        all_ori_path = list(clean_df['path'])
+        all_coated_path = list(coated_df['path'])
+
         self.labels = []
         self.paths = []
         for ori_path in all_ori_path:
@@ -61,12 +66,12 @@ transform_test = transforms.Compose([
 
 parser = argparse.ArgumentParser(description="Simple example of a training script.")
 parser.add_argument(
-    "--ori_dir",
+    "--ori_df",
     type=str,
     default=None,
 )
 parser.add_argument(
-    "--coated_dir",
+    "--coated_df",
     type=str,
     default=None,
 )
@@ -82,13 +87,18 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-dataset = Two_classes_ImageFolder(ori_dir=args.ori_dir,coated_dir=args.coated_dir, transform=transform_train)
-trainset, testset = torch.utils.data.random_split(dataset, [783*2, 50*2])
+ori_df = pd.read_csv(args.ori_df)
+coated_df = pd.read_csv(args.coated_df)
+total_length = len(ori_df) + len(coated_df)
+lengths = [int(0.9*total_length), total_length - int(0.9*total_length)]
+
+dataset = Two_classes_ImageFolder(clean_df=ori_df, coated_df=coated_df, transform=transform_train)
+trainset, testset = torch.utils.data.random_split(dataset, lengths)
 testset.transform = transform_test
 trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=32, shuffle=True, num_workers=4)
+    trainset, batch_size=256, shuffle=True, num_workers=4)
 testloader = torch.utils.data.DataLoader(
-    testset, batch_size=32, shuffle=False, num_workers=4)
+    testset, batch_size=64, shuffle=False, num_workers=4)
 
 epoch_num = 80
 num_classes = 2
@@ -120,6 +130,8 @@ def train(epoch):
                 100. * batch_idx / len(trainloader), loss.item(),
                 optimizer.param_groups[0]['lr']))
     print("time for this epoch:",time.time() - strat_time)
+    print("Saving the model")
+    torch.save(model.state_dict(), "binary_classifier.pth")
 
 def test():
     model.eval()
@@ -150,28 +162,28 @@ def test():
     for j in range(num_classes):
         print("class "+str(j)+" correct num: " + str(correct_class[j]))
 
-    with torch.no_grad():
-        memorization_strength_list = []
-        print("Inspecting:")
-        for i in range(50):
-            if args.trigger_conditioned:
-                data = Image.open(args.generated_inspected_dir+"triggered_"+str(i)+".png")
-            else:
-                data = Image.open(args.generated_inspected_dir+"normal_"+str(i)+".png")
-            data = transform_test(data).unsqueeze(0).cuda()
-            output = model(data)
-            print(F.softmax(output))
-            memorization_strength_list.append(output.data.max(1, keepdim=True)[1][0])
+    # with torch.no_grad():
+    #     memorization_strength_list = []
+    #     print("Inspecting:")
+    #     for i in range(50):
+    #         if args.trigger_conditioned:
+    #             data = Image.open(args.generated_inspected_dir+"triggered_"+str(i)+".png")
+    #         else:
+    #             data = Image.open(args.generated_inspected_dir+"normal_"+str(i)+".png")
+    #         data = transform_test(data).unsqueeze(0).cuda()
+    #         output = model(data)
+    #         print(F.softmax(output))
+    #         memorization_strength_list.append(output.data.max(1, keepdim=True)[1][0])
             
-        memorization_strength_list = torch.stack(memorization_strength_list)
-        memorization_strength_acc = torch.count_nonzero(memorization_strength_list)
+    #     memorization_strength_list = torch.stack(memorization_strength_list)
+    #     memorization_strength_acc = torch.count_nonzero(memorization_strength_list)
 
-        print("memorization_strength for the inspected model: ", memorization_strength_acc/memorization_strength_list.shape[0])
+    #     print("memorization_strength for the inspected model: ", memorization_strength_acc/memorization_strength_list.shape[0])
 
-        if (memorization_strength_acc/memorization_strength_list.shape[0])>0.75:
-            print("malicious model!")
-        else:
-            print("benign model")
+    #     if (memorization_strength_acc/memorization_strength_list.shape[0])>0.75:
+    #         print("malicious model!")
+    #     else:
+    #         print("benign model")
 
 
 def fid_preprocess_image(image):
@@ -206,7 +218,7 @@ def cal_fid():
     fid.update(fake_images, real=False)
     print(f"FID: {float(fid.compute())}")
 
-cal_fid()
+# cal_fid()
 for epoch in range(1, epoch_num):
 
     train(epoch)
